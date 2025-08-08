@@ -13,7 +13,7 @@ venv/
 
 # Reports
 reports/
-*.html
+#*.html
 *.xml
 
 # IDE
