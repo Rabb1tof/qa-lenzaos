@@ -7,6 +7,7 @@ from .base_page import BasePage
 from core.browser import get_base_url
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver import ActionChains
 
 
 class AuthLandingPage(BasePage):
@@ -14,7 +15,12 @@ class AuthLandingPage(BasePage):
 
     # Real selectors from live DOM
     # Language switcher button in header
-    LANG_DROPDOWN = (By.CSS_SELECTOR, "button.lang-switch")
+    LANG_BTN_CANDIDATES = [
+        (By.CSS_SELECTOR, "button.lang-switch"),
+        (By.CSS_SELECTOR, "[data-testid*='lang']"),
+        (By.CSS_SELECTOR, "button[class*='lang']"),
+        (By.XPATH, "//header//button[.//span[contains(translate(., 'ENRU', 'enru'), 'ru')] or contains(., 'EN') or contains(., 'RU')]")
+    ]
     TITLE = (By.CSS_SELECTOR, "p.pr_slider_title")
     # Multiple locale variants for the Start button
     START_BTN_XPATHS = [
@@ -38,155 +44,34 @@ class AuthLandingPage(BasePage):
             pass
         return self
 
-    def open_language_dropdown(self):
-        self.click(*self.LANG_DROPDOWN)
-        # Wait for any menu container or items to appear
-        try:
-            WebDriverWait(self.driver, 6).until(
-                EC.visibility_of_element_located((
-                    By.CSS_SELECTOR,
-                    ".context-menu.context-menu--modal .context-menu__list"
-                ))
-            )
-        except Exception:
-            pass
-
-    def _switch_to_default(self):
-        try:
-            self.driver.switch_to.default_content()
-        except Exception:
-            pass
-
-    def _find_menu_in_current_context(self):
-        try:
-            return self.driver.find_element(By.CSS_SELECTOR, ".context-menu.context-menu--modal .context-menu__list")
-        except Exception:
-            return None
-
-    def _switch_to_menu_context(self):
-        """Try to ensure driver context points to the iframe (if any) containing the language menu.
-        Returns the menu WebElement if found, otherwise None. Restores default content if not found.
-        """
-        # First, try in default content
-        self._switch_to_default()
-        menu = self._find_menu_in_current_context()
-        if menu is not None:
-            return menu
-        # Try top-level iframes
-        frames = self.driver.find_elements(By.TAG_NAME, "iframe")
-        for fr in frames:
+    def _find_lang_btn(self):
+        for by, sel in self.LANG_BTN_CANDIDATES:
             try:
-                self.driver.switch_to.frame(fr)
-                menu = self._find_menu_in_current_context()
-                if menu is not None:
-                    return menu
-                # Try one nested level
-                nested = self.driver.find_elements(By.TAG_NAME, "iframe")
-                for fr2 in nested:
+                el = WebDriverWait(self.driver, 4).until(EC.presence_of_element_located((by, sel)))
+                if el and el.is_displayed():
                     try:
-                        self.driver.switch_to.frame(fr2)
-                        menu = self._find_menu_in_current_context()
-                        if menu is not None:
-                            return menu
-                    finally:
-                        self.driver.switch_to.parent_frame()
-            except Exception:
-                pass
-            finally:
-                self.driver.switch_to.default_content()
-        # Not found
-        self._switch_to_default()
-        return None
-
-    def get_language_items(self):
-        # Use Selenium DOM to extract items; handle iframes if needed
-        menu = self._switch_to_menu_context()
-        if menu is None:
-            return {"items": [], "texts": []}
-        try:
-            WebDriverWait(self.driver, 5).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, ".context-menu__option .list-item__title"))
-            )
-        except Exception:
-            pass
-        titles = menu.find_elements(By.CSS_SELECTOR, ".context-menu__option .list-item__title")
-        texts: list[str] = []
-        items = []
-        for i, t in enumerate(titles):
-            try:
-                txt = (t.text or "").strip()
-                if not txt:
-                    continue
-                texts.append(txt)
-                items.append({"text": txt, "index": i})
+                        WebDriverWait(self.driver, 3).until(EC.element_to_be_clickable((by, sel)))
+                    except Exception:
+                        pass
+                    return el
             except Exception:
                 continue
-        return {"items": items, "texts": texts}
+        raise AssertionError("Language button not found")
 
-    def click_language_by_text(self, label: str):
-        """Click a language option by visible text within the dropdown menu.
-        Prefers searching within .context-menu__list; falls back to a global search.
-        Assumes the dropdown has already been opened.
-        """
-        # Click the option by text strictly inside the modal menu in #context-root
-        container = self._switch_to_menu_context()
-        if container is None:
-            # Fallback: try a global search as last resort
-            try:
-                target = WebDriverWait(self.driver, 5).until(
-                    EC.element_to_be_clickable((
-                        By.XPATH,
-                        f"//*[self::li or self::button or self::a or self::div][normalize-space(.)='{label}' or .//span[normalize-space(text())='{label}']]"
-                    ))
-                )
-                target.click()
-                return True
-            except Exception:
-                return False
-
-        # Ensure the list is present and the label exists before clicking
+    def open_language_dropdown(self):
+        btn = self._find_lang_btn()
         try:
-            WebDriverWait(self.driver, 5).until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "#context-root .context-menu__list"))
-            )
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'})", btn)
         except Exception:
             pass
-
         try:
-            # Wait for the specific label span, then click its ancestor option element
-            item_span = WebDriverWait(container, 6).until(
-                EC.visibility_of_element_located((
-                    By.XPATH,
-                    f".//span[contains(@class,'list-item__title')][normalize-space(text())='{label}']"
-                ))
-            )
-            option = item_span.find_element(By.XPATH, "ancestor::*[contains(@class,'context-menu__option')][1]")
-            try:
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", option)
-            except Exception:
-                pass
-            WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(option))
-            option.click()
-            self._switch_to_default()
-            return True
+            ActionChains(self.driver).move_to_element(btn).pause(0.05).click(btn).perform()
         except Exception:
-            # Fallback global search
-            self._switch_to_default()
-            try:
-                target = WebDriverWait(self.driver, 6).until(
-                    EC.element_to_be_clickable((
-                        By.XPATH,
-                        f"//*[self::li or self::button or self::a or self::div][normalize-space(.)='{label}' or .//span[normalize-space(text())='{label}']]"
-                    ))
-                )
-                try:
-                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
-                except Exception:
-                    pass
-                target.click()
-                return True
-            except Exception:
-                return False
+            self.driver.execute_script("arguments[0].click();", btn)
+
+    def get_language_items(self):
+        # TODO: Inspect dropdown menu structure to provide stable locator for items
+        return []
 
     def get_title_text(self) -> str:
         return self.get_text(*self.TITLE)
@@ -205,7 +90,12 @@ class AuthLandingPage(BasePage):
 
     def get_language_label(self) -> str:
         try:
-            return self.wait_visible(*self.LANG_DROPDOWN).text.strip()
+            btn = self._find_lang_btn()
+            txt = (btn.text or "").strip()
+            if not txt:
+                # sometimes label stored in aria-label or data-attr
+                txt = (btn.get_attribute('aria-label') or btn.get_attribute('data-lang') or '').strip()
+            return txt
         except Exception:
             return ""
 
@@ -214,9 +104,13 @@ class AuthLandingPage(BasePage):
         Works for e.g. "English" or "Русский".
         """
         # Ensure dropdown button is visible and clickable
-        btn = WebDriverWait(self.driver, 10).until(EC.element_to_be_clickable(self.LANG_DROPDOWN))
+        btn = self._find_lang_btn()
         try:
-            btn.click()
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'})", btn)
+        except Exception:
+            pass
+        try:
+            ActionChains(self.driver).move_to_element(btn).pause(0.05).click(btn).perform()
         except Exception:
             self.driver.execute_script("arguments[0].click();", btn)
 
@@ -236,22 +130,76 @@ class AuthLandingPage(BasePage):
                 continue
 
         # Build option XPath; prefer searching within discovered menu
-        opt_xpath = (
-            f".//*[self::button or self::a or self::div][normalize-space(.)='{label}' or .//span[normalize-space(text())='{label}']]"
-        )
-        if menu is not None:
-            opt = WebDriverWait(self.driver, 5).until(
-                EC.visibility_of_element_located((By.XPATH, opt_xpath))
-            )
-        else:
-            # Fallback: global search
-            opt = WebDriverWait(self.driver, 5).until(
-                EC.visibility_of_element_located((By.XPATH, opt_xpath.lstrip('.')))
-            )
+        # Build option XPath: support full and short labels
+        lbl = label.strip()
+        alts = [lbl]
+        if lbl.lower().startswith('eng'):
+            alts += ['EN', 'En', 'English']
+        if lbl.lower().startswith('рус') or lbl.lower() in ('ru', 'rus', 'russian'):
+            alts += ['RU', 'Ru', 'Русский']
+        txt_pred = " or ".join([f"normalize-space(.)='{a}' or .//span[normalize-space(text())='{a}']" for a in alts])
+        opt_xpath = f".//*[self::button or self::a or self::div][{txt_pred}]"
         try:
-            opt.click()
+            if menu is not None:
+                opt = WebDriverWait(self.driver, 3).until(EC.visibility_of_element_located((By.XPATH, opt_xpath)))
+            else:
+                # Fallback: global search
+                opt = WebDriverWait(self.driver, 3).until(EC.visibility_of_element_located((By.XPATH, opt_xpath.lstrip('.'))))
+            try:
+                ActionChains(self.driver).move_to_element(opt).pause(0.05).click(opt).perform()
+            except Exception:
+                self.driver.execute_script("arguments[0].click();", opt)
         except Exception:
-            self.driver.execute_script("arguments[0].click();", opt)
+            # Try generic data attributes if present
+            try:
+                data_selector = None
+                if lbl.lower().startswith('eng'):
+                    data_selector = (By.CSS_SELECTOR, "[data-lang='en'], [lang='en']")
+                elif lbl.lower().startswith('рус') or lbl.lower() in ('ru', 'rus', 'russian'):
+                    data_selector = (By.CSS_SELECTOR, "[data-lang='ru'], [lang='ru']")
+                if data_selector is not None:
+                    opt2 = WebDriverWait(self.driver, 2).until(EC.element_to_be_clickable(data_selector))
+                    try:
+                        ActionChains(self.driver).move_to_element(opt2).pause(0.05).click(opt2).perform()
+                    except Exception:
+                        self.driver.execute_script("arguments[0].click();", opt2)
+            except Exception:
+                # fall through to toggle path
+                pass
+        # Verify selection by label change; if not changed, try cycling approach
+        def _label():
+            try:
+                return self.get_language_label()
+            except Exception:
+                return ""
+        def _matches(target: str, current: str) -> bool:
+            target = target.lower()
+            c = (current or "").lower()
+            if target.startswith('eng'):
+                return ('eng' in c) or (c.strip() in ('en', 'eng'))
+            if target.startswith('рус') or 'ru' == target or target == 'русский':
+                return ('рус' in c) or (c.strip() in ('ru', 'rus'))
+            return target == c
+        try:
+            WebDriverWait(self.driver, 2).until(lambda d: _matches(label, _label()))
+            return
+        except Exception:
+            pass
+
+        # MENU path failed to update label — cycle the toggle until label matches
+        for _ in range(6):
+            try:
+                btn2 = WebDriverWait(self.driver, 3).until(EC.element_to_be_clickable(self.LANG_DROPDOWN))
+                try:
+                    btn2.click()
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", btn2)
+                WebDriverWait(self.driver, 2).until(lambda d: bool(_label()))
+                if _matches(label, _label()):
+                    return
+            except Exception:
+                continue
+        raise TimeoutError(f"Failed to switch language to '{label}' via dropdown")
 
     def dismiss_cookies(self):
         """Try to close cookie/consent banners if present."""

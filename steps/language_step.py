@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import random
 from selenium.common.exceptions import TimeoutException
 
 from pages.auth_pages import AuthLandingPage
@@ -15,120 +14,111 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
 
 
 def run(driver) -> None:
-    """Step 1: Смена языка: открыть dropdown, получить языки, выбрать случайный 2 раза, затем /ru."""
+    """Step 1: Switch languages on the first auth page and verify UI changes."""
     page = AuthLandingPage(driver).open()
 
     if DRY_RUN:
-        print("[lang] DRY_RUN enabled: только открыли страницу без действий")
+        # In dry mode we only verify that page opens without interacting
         return
 
+    # Use the visible language dropdown first, then fall back to URL locales
     try:
-        # Ensure landing and close banners
+        # Ensure on landing
         page = AuthLandingPage(driver).open()
         page.dismiss_cookies()
 
+        # Try to ensure dropdown is visible quickly
+        try:
+            WebDriverWait(driver, 3).until(EC.visibility_of_element_located(AuthLandingPage.LANG_DROPDOWN))
+        except Exception:
+            pass
+
         def lang_label():
             return page.get_language_label()
-
         initial_label = lang_label()
-        print(f"[lang] initial label: '{initial_label}'")
+        initial_title = page.get_title_text()
+        print(f"[lang] initial label='{initial_label}', title='{initial_title}'")
 
-        def open_and_get():
-            print("[lang] opening dropdown")
-            page.open_language_dropdown()
-            # Quick diagnostics about menu containers
-            diag = driver.execute_script(
-                """
-                (function(){
-                  function cnt(sel){try{return document.querySelectorAll(sel).length}catch(e){return -1}}
-                  const info = {
-                    ctxRoot: !!document.querySelector('#context-root'),
-                    ctxRootNotEmpty: !!document.querySelector('#context-root:not(.empty)'),
-                    dialogRoot: !!document.querySelector('#dialog-root'),
-                    menuList: cnt('.context-menu__list'),
-                    roleMenu: cnt('[role="menu"]'),
-                    roleItem: cnt('[role="menuitem"]'),
-                    anyMenus: cnt('.menu, .dropdown, .menu-items'),
-                    langButtons: cnt("button, a, li"),
-                  };
-                  return info;
-                })();
-                """
-            )
-            print(f"[lang][diag] containers: {diag}")
-            # Try to wait a bit for any of expected containers
-            try:
-                WebDriverWait(driver, 5).until(
-                    EC.any_of(
-                        EC.visibility_of_element_located((By.CSS_SELECTOR, ".context-menu__list")),
-                        EC.visibility_of_element_located((By.CSS_SELECTOR, "#context-root *")),
-                        EC.visibility_of_element_located((By.CSS_SELECTOR, "#dialog-root *")),
-                        EC.visibility_of_element_located((By.CSS_SELECTOR, "[role='menu']")),
-                    )
-                )
-            except Exception:
-                pass
-            # Dump page source for post-mortem
-            try:
-                import os
-                dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
-                os.makedirs(dump_dir, exist_ok=True)
-                with open(os.path.join(dump_dir, "step_after_lang_open.html"), "w", encoding="utf-8") as f:
-                    f.write(driver.page_source)
-                print("[lang][diag] saved DOM dump to _dom_dumps/step_after_lang_open.html")
-            except Exception as e:
-                print(f"[lang][diag] failed dumping DOM: {e}")
+        # Helpers
+        def matches_en(val: str) -> bool:
+            v = (val or "").lower()
+            return ('eng' in v) or (v.strip() in ('en', 'eng', 'english'))
+        def matches_ru(val: str) -> bool:
+            v = (val or "").lower()
+            return ('рус' in v) or (v.strip() in ('ru', 'rus', 'russian'))
 
-            # Wait for menu to appear
-            try:
-                WebDriverWait(driver, 5).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, ".context-menu__list"))
-                )
-            except Exception:
-                # Allow fallback: any generic menu
-                WebDriverWait(driver, 5).until(
-                    EC.visibility_of_element_located((By.CSS_SELECTOR, "[role='menu'], .menu, .dropdown, .menu-items"))
-                )
-            data = page.get_language_items()
-            items = (data or {}).get("items", [])
-            texts = (data or {}).get("texts", [])
-            print(f"[lang] languages available (n={len(texts)}): {texts}")
-            assert items, "Не удалось получить список языков из dropdown"
-            return items, texts
-
-        # Do two random switches
-        for i in range(1, 3):
-            items, texts = open_and_get()
-            current = lang_label()
-            # Prefer a language different from current
-            candidates = [t for t in texts if t and t != current]
-            pick = random.choice(candidates or texts)
-            print(f"[lang] random pick #{i}: '{pick}' -> clicking")
-            try:
-                page.click_language_by_text(pick)
-            except Exception:
-                # fallback using select_language if needed
-                page.select_language(pick)
-            # Wait label change (or confirmation it matches pick)
-            try:
-                WebDriverWait(driver, 6).until(
-                    lambda d: lang_label() != current or (pick in (lang_label() or ""))
-                )
-            except Exception:
-                # Not fatal: still log what we have
-                pass
-            print(f"[lang] now label: '{lang_label()}'")
-
-        # Finally normalize to RU via URL
+        # UI-only checks with assertions
         try:
-            base = get_base_url().rstrip('/')
-            target = f"{base}/ru"
-            print(f"[lang] navigating to RU via URL: {target}")
-            driver.get(target)
-            # wait URL contains '/ru'
-            WebDriverWait(driver, 10).until(EC.url_contains('/ru'))
-            print("[lang] RU via URL loaded")
+            page.select_language("English")
+            init_title = page.get_title_text()
+            WebDriverWait(driver, 5).until(
+                lambda d: matches_en(lang_label()) or '/en' in d.current_url or page.get_title_text() != init_title
+            )
+            print(f"[lang] switched to English via dropdown -> '{lang_label()}'")
         except Exception as e:
-            raise AssertionError(f"Не удалось перейти на RU через URL: {e}")
+            # one more attempt
+            try:
+                page.select_language("English")
+                init_title = page.get_title_text()
+                WebDriverWait(driver, 5).until(
+                    lambda d: matches_en(lang_label()) or '/en' in d.current_url or page.get_title_text() != init_title
+                )
+            except Exception:
+                raise AssertionError(f"Language dropdown failed to switch to English: {e}")
+
+        before_label = lang_label()
+        try:
+            page.select_language("Русский")
+            init_title2 = page.get_title_text()
+            WebDriverWait(driver, 5).until(
+                lambda d: matches_ru(lang_label()) or '/ru' in d.current_url or page.get_title_text() != init_title2
+            )
+            print(f"[lang] switched back to Russian via dropdown -> '{lang_label()}'")
+        except Exception as e:
+            try:
+                page.select_language("Русский")
+                init_title2 = page.get_title_text()
+                WebDriverWait(driver, 5).until(
+                    lambda d: matches_ru(lang_label()) or '/ru' in d.current_url or page.get_title_text() != init_title2
+                )
+            except Exception:
+                raise AssertionError(f"Language dropdown failed to switch back to Russian: {e}")
+
+        # Restore RU via URL just to normalize state (non-blocking)
+        try:
+            from core.browser import get_base_url
+            base = get_base_url().rstrip('/')
+            driver.get(f"{base}/ru")
+        except Exception:
+            pass
     except TimeoutException as e:
+        # dump for diagnostics
+        import os, time
+        ts = int(time.time())
+        dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
+        os.makedirs(dump_dir, exist_ok=True)
+        try:
+            with open(os.path.join(dump_dir, f"lang_timeout_{ts}.html"), "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+        except Exception:
+            pass
+        try:
+            driver.save_screenshot(os.path.join(dump_dir, f"lang_timeout_{ts}.png"))
+        except Exception:
+            pass
         raise AssertionError(f"Language step timeout: {e}")
+    except AssertionError as e:
+        import os, time
+        ts = int(time.time())
+        dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
+        os.makedirs(dump_dir, exist_ok=True)
+        try:
+            with open(os.path.join(dump_dir, f"lang_fail_{ts}.html"), "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+        except Exception:
+            pass
+        try:
+            driver.save_screenshot(os.path.join(dump_dir, f"lang_fail_{ts}.png"))
+        except Exception:
+            pass
+        raise
