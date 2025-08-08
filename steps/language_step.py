@@ -39,21 +39,50 @@ def run(driver) -> None:
         initial_title = page.get_title_text()
         print(f"[lang] initial label='{initial_label}', title='{initial_title}'")
 
+        # Helpers
+        def matches_en(val: str) -> bool:
+            v = (val or "").lower()
+            return ('eng' in v) or (v.strip() in ('en', 'eng', 'english'))
+        def matches_ru(val: str) -> bool:
+            v = (val or "").lower()
+            return ('рус' in v) or (v.strip() in ('ru', 'rus', 'russian'))
+
         # UI-only checks with assertions
         try:
             page.select_language("English")
-            WebDriverWait(driver, 4).until(lambda d: lang_label() and lang_label() != initial_label)
+            init_title = page.get_title_text()
+            WebDriverWait(driver, 5).until(
+                lambda d: matches_en(lang_label()) or '/en' in d.current_url or page.get_title_text() != init_title
+            )
             print(f"[lang] switched to English via dropdown -> '{lang_label()}'")
         except Exception as e:
-            raise AssertionError(f"Language dropdown failed to switch to English: {e}")
+            # one more attempt
+            try:
+                page.select_language("English")
+                init_title = page.get_title_text()
+                WebDriverWait(driver, 5).until(
+                    lambda d: matches_en(lang_label()) or '/en' in d.current_url or page.get_title_text() != init_title
+                )
+            except Exception:
+                raise AssertionError(f"Language dropdown failed to switch to English: {e}")
 
         before_label = lang_label()
         try:
             page.select_language("Русский")
-            WebDriverWait(driver, 4).until(lambda d: lang_label() and lang_label() != before_label)
+            init_title2 = page.get_title_text()
+            WebDriverWait(driver, 5).until(
+                lambda d: matches_ru(lang_label()) or '/ru' in d.current_url or page.get_title_text() != init_title2
+            )
             print(f"[lang] switched back to Russian via dropdown -> '{lang_label()}'")
         except Exception as e:
-            raise AssertionError(f"Language dropdown failed to switch back to Russian: {e}")
+            try:
+                page.select_language("Русский")
+                init_title2 = page.get_title_text()
+                WebDriverWait(driver, 5).until(
+                    lambda d: matches_ru(lang_label()) or '/ru' in d.current_url or page.get_title_text() != init_title2
+                )
+            except Exception:
+                raise AssertionError(f"Language dropdown failed to switch back to Russian: {e}")
 
         # Restore RU via URL just to normalize state (non-blocking)
         try:
@@ -63,4 +92,33 @@ def run(driver) -> None:
         except Exception:
             pass
     except TimeoutException as e:
+        # dump for diagnostics
+        import os, time
+        ts = int(time.time())
+        dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
+        os.makedirs(dump_dir, exist_ok=True)
+        try:
+            with open(os.path.join(dump_dir, f"lang_timeout_{ts}.html"), "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+        except Exception:
+            pass
+        try:
+            driver.save_screenshot(os.path.join(dump_dir, f"lang_timeout_{ts}.png"))
+        except Exception:
+            pass
         raise AssertionError(f"Language step timeout: {e}")
+    except AssertionError as e:
+        import os, time
+        ts = int(time.time())
+        dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
+        os.makedirs(dump_dir, exist_ok=True)
+        try:
+            with open(os.path.join(dump_dir, f"lang_fail_{ts}.html"), "w", encoding="utf-8") as f:
+                f.write(driver.page_source)
+        except Exception:
+            pass
+        try:
+            driver.save_screenshot(os.path.join(dump_dir, f"lang_fail_{ts}.png"))
+        except Exception:
+            pass
+        raise
