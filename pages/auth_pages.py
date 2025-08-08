@@ -40,10 +40,153 @@ class AuthLandingPage(BasePage):
 
     def open_language_dropdown(self):
         self.click(*self.LANG_DROPDOWN)
+        # Wait for any menu container or items to appear
+        try:
+            WebDriverWait(self.driver, 6).until(
+                EC.visibility_of_element_located((
+                    By.CSS_SELECTOR,
+                    ".context-menu.context-menu--modal .context-menu__list"
+                ))
+            )
+        except Exception:
+            pass
+
+    def _switch_to_default(self):
+        try:
+            self.driver.switch_to.default_content()
+        except Exception:
+            pass
+
+    def _find_menu_in_current_context(self):
+        try:
+            return self.driver.find_element(By.CSS_SELECTOR, ".context-menu.context-menu--modal .context-menu__list")
+        except Exception:
+            return None
+
+    def _switch_to_menu_context(self):
+        """Try to ensure driver context points to the iframe (if any) containing the language menu.
+        Returns the menu WebElement if found, otherwise None. Restores default content if not found.
+        """
+        # First, try in default content
+        self._switch_to_default()
+        menu = self._find_menu_in_current_context()
+        if menu is not None:
+            return menu
+        # Try top-level iframes
+        frames = self.driver.find_elements(By.TAG_NAME, "iframe")
+        for fr in frames:
+            try:
+                self.driver.switch_to.frame(fr)
+                menu = self._find_menu_in_current_context()
+                if menu is not None:
+                    return menu
+                # Try one nested level
+                nested = self.driver.find_elements(By.TAG_NAME, "iframe")
+                for fr2 in nested:
+                    try:
+                        self.driver.switch_to.frame(fr2)
+                        menu = self._find_menu_in_current_context()
+                        if menu is not None:
+                            return menu
+                    finally:
+                        self.driver.switch_to.parent_frame()
+            except Exception:
+                pass
+            finally:
+                self.driver.switch_to.default_content()
+        # Not found
+        self._switch_to_default()
+        return None
 
     def get_language_items(self):
-        # TODO: Inspect dropdown menu structure to provide stable locator for items
-        return []
+        # Use Selenium DOM to extract items; handle iframes if needed
+        menu = self._switch_to_menu_context()
+        if menu is None:
+            return {"items": [], "texts": []}
+        try:
+            WebDriverWait(self.driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, ".context-menu__option .list-item__title"))
+            )
+        except Exception:
+            pass
+        titles = menu.find_elements(By.CSS_SELECTOR, ".context-menu__option .list-item__title")
+        texts: list[str] = []
+        items = []
+        for i, t in enumerate(titles):
+            try:
+                txt = (t.text or "").strip()
+                if not txt:
+                    continue
+                texts.append(txt)
+                items.append({"text": txt, "index": i})
+            except Exception:
+                continue
+        return {"items": items, "texts": texts}
+
+    def click_language_by_text(self, label: str):
+        """Click a language option by visible text within the dropdown menu.
+        Prefers searching within .context-menu__list; falls back to a global search.
+        Assumes the dropdown has already been opened.
+        """
+        # Click the option by text strictly inside the modal menu in #context-root
+        container = self._switch_to_menu_context()
+        if container is None:
+            # Fallback: try a global search as last resort
+            try:
+                target = WebDriverWait(self.driver, 5).until(
+                    EC.element_to_be_clickable((
+                        By.XPATH,
+                        f"//*[self::li or self::button or self::a or self::div][normalize-space(.)='{label}' or .//span[normalize-space(text())='{label}']]"
+                    ))
+                )
+                target.click()
+                return True
+            except Exception:
+                return False
+
+        # Ensure the list is present and the label exists before clicking
+        try:
+            WebDriverWait(self.driver, 5).until(
+                EC.presence_of_element_located((By.CSS_SELECTOR, "#context-root .context-menu__list"))
+            )
+        except Exception:
+            pass
+
+        try:
+            # Wait for the specific label span, then click its ancestor option element
+            item_span = WebDriverWait(container, 6).until(
+                EC.visibility_of_element_located((
+                    By.XPATH,
+                    f".//span[contains(@class,'list-item__title')][normalize-space(text())='{label}']"
+                ))
+            )
+            option = item_span.find_element(By.XPATH, "ancestor::*[contains(@class,'context-menu__option')][1]")
+            try:
+                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", option)
+            except Exception:
+                pass
+            WebDriverWait(self.driver, 5).until(EC.element_to_be_clickable(option))
+            option.click()
+            self._switch_to_default()
+            return True
+        except Exception:
+            # Fallback global search
+            self._switch_to_default()
+            try:
+                target = WebDriverWait(self.driver, 6).until(
+                    EC.element_to_be_clickable((
+                        By.XPATH,
+                        f"//*[self::li or self::button or self::a or self::div][normalize-space(.)='{label}' or .//span[normalize-space(text())='{label}']]"
+                    ))
+                )
+                try:
+                    self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target)
+                except Exception:
+                    pass
+                target.click()
+                return True
+            except Exception:
+                return False
 
     def get_title_text(self) -> str:
         return self.get_text(*self.TITLE)
