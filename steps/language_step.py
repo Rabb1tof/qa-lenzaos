@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import random
 from selenium.common.exceptions import TimeoutException
 
 from pages.auth_pages import AuthLandingPage
@@ -14,86 +15,66 @@ DRY_RUN = os.getenv("DRY_RUN", "true").lower() in ("1", "true", "yes")
 
 
 def run(driver) -> None:
-    """Step 1: Switch languages on the first auth page and verify UI changes."""
+    """Step 1: Open dropdown, list languages, click two random ones, then normalize to RU."""
     page = AuthLandingPage(driver).open()
 
     if DRY_RUN:
-        # In dry mode we only verify that page opens without interacting
+        print("[lang] DRY_RUN enabled: только открыли страницу без действий")
         return
 
-    # Use the visible language dropdown first, then fall back to URL locales
     try:
-        # Ensure on landing
         page = AuthLandingPage(driver).open()
         page.dismiss_cookies()
 
-        # Try to ensure dropdown is visible quickly
-        try:
-            WebDriverWait(driver, 3).until(EC.visibility_of_element_located(AuthLandingPage.LANG_DROPDOWN))
-        except Exception:
-            pass
+        initial_label = page.get_language_label()
 
-        def lang_label():
-            return page.get_language_label()
-        initial_label = lang_label()
-        initial_title = page.get_title_text()
-        print(f"[lang] initial label='{initial_label}', title='{initial_title}'")
-
-        # Helpers
-        def matches_en(val: str) -> bool:
-            v = (val or "").lower()
-            return ('eng' in v) or (v.strip() in ('en', 'eng', 'english'))
-        def matches_ru(val: str) -> bool:
-            v = (val or "").lower()
-            return ('рус' in v) or (v.strip() in ('ru', 'rus', 'russian'))
-
-        # UI-only checks with assertions
-        try:
-            page.select_language("English")
-            init_title = page.get_title_text()
-            WebDriverWait(driver, 5).until(
-                lambda d: matches_en(lang_label()) or '/en' in d.current_url or page.get_title_text() != init_title
-            )
-            print(f"[lang] switched to English via dropdown -> '{lang_label()}'")
-        except Exception as e:
-            # one more attempt
+        def open_and_get():
+            # Open dropdown and wait for menu visibility
+            page.open_language_dropdown()
             try:
-                page.select_language("English")
-                init_title = page.get_title_text()
                 WebDriverWait(driver, 5).until(
-                    lambda d: matches_en(lang_label()) or '/en' in d.current_url or page.get_title_text() != init_title
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, ".context-menu.context-menu--modal .context-menu__list"))
                 )
             except Exception:
-                raise AssertionError(f"Language dropdown failed to switch to English: {e}")
-
-        before_label = lang_label()
-        try:
-            page.select_language("Русский")
-            init_title2 = page.get_title_text()
-            WebDriverWait(driver, 5).until(
-                lambda d: matches_ru(lang_label()) or '/ru' in d.current_url or page.get_title_text() != init_title2
-            )
-            print(f"[lang] switched back to Russian via dropdown -> '{lang_label()}'")
-        except Exception as e:
+                pass
+            # dump DOM for diagnostics
             try:
-                page.select_language("Русский")
-                init_title2 = page.get_title_text()
-                WebDriverWait(driver, 5).until(
-                    lambda d: matches_ru(lang_label()) or '/ru' in d.current_url or page.get_title_text() != init_title2
-                )
+                dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
+                os.makedirs(dump_dir, exist_ok=True)
+                with open(os.path.join(dump_dir, "step_after_lang_open.html"), "w", encoding="utf-8") as f:
+                    f.write(driver.page_source)
             except Exception:
-                raise AssertionError(f"Language dropdown failed to switch back to Russian: {e}")
+                pass
+            data = page.get_language_items()
+            items = data.get("items", [])
+            texts = data.get("texts", [])
+            print(f"[lang] languages available (n={len(texts)}): {texts}")
+            assert items, "Не удалось получить список языков из dropdown"
+            return items, texts
 
-        # Restore RU via URL just to normalize state (non-blocking)
-        try:
-            from core.browser import get_base_url
-            base = get_base_url().rstrip('/')
-            driver.get(f"{base}/ru")
-        except Exception:
-            pass
+        # Click two random languages (excluding current label if possible)
+        for i in range(1, 3):
+            items, texts = open_and_get()
+            current = page.get_language_label()
+            candidates = [t for t in texts if t and t != current]
+            pick = random.choice(candidates or texts)
+            print(f"[lang] random pick #{i}: '{pick}' -> clicking")
+            page.click_language_by_text(pick)
+            WebDriverWait(driver, 6).until(
+                lambda d: page.get_language_label() != current or (pick in (page.get_language_label() or ""))
+            )
+            print(f"[lang] now label: '{page.get_language_label()}'")
+
+        # Normalize to RU via URL navigation
+        base = get_base_url().rstrip('/')
+        print(f"[lang] navigating to RU via URL: {base}/ru")
+        driver.get(f"{base}/ru")
+        WebDriverWait(driver, 10).until(EC.url_contains('/ru'))
+        print("[lang] RU via URL loaded")
+
     except TimeoutException as e:
         # dump for diagnostics
-        import os, time
+        import time
         ts = int(time.time())
         dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
         os.makedirs(dump_dir, exist_ok=True)
@@ -108,7 +89,7 @@ def run(driver) -> None:
             pass
         raise AssertionError(f"Language step timeout: {e}")
     except AssertionError as e:
-        import os, time
+        import time
         ts = int(time.time())
         dump_dir = os.path.join(os.getcwd(), "_dom_dumps")
         os.makedirs(dump_dir, exist_ok=True)
