@@ -15,10 +15,14 @@ class AuthLandingPage(BasePage):
     # Real selectors from live DOM
     # Language switcher button in header
     LANG_DROPDOWN = (By.CSS_SELECTOR, "button.lang-switch")
-    # Title text in the slider
     TITLE = (By.CSS_SELECTOR, "p.pr_slider_title")
-    # "Начать" button at the bottom (uses span text inside)
-    START_BTN = (By.XPATH, "//button[span[contains(normalize-space(.), 'Начать')]]")
+    # Multiple locale variants for the Start button
+    START_BTN_XPATHS = [
+        "//button[span[contains(normalize-space(.), 'Начать')]]",
+        "//button[span[contains(normalize-space(.), 'Start')]]",
+        "//button[contains(normalize-space(.), 'Начать')]",
+        "//button[contains(normalize-space(.), 'Start')]",
+    ]
 
     def open(self):
         self.driver.get(get_base_url())
@@ -45,7 +49,16 @@ class AuthLandingPage(BasePage):
         return self.get_text(*self.TITLE)
 
     def click_start(self):
-        self.click(*self.START_BTN)
+        # Try multiple variants in different locales with safe click
+        for xp in self.START_BTN_XPATHS:
+            els = self.driver.find_elements(By.XPATH, xp)
+            if els:
+                try:
+                    els[0].click()
+                except Exception:
+                    self.driver.execute_script("arguments[0].click();", els[0])
+                return
+        raise AssertionError("Start button not found on landing page")
 
     def get_language_label(self) -> str:
         try:
@@ -62,17 +75,36 @@ class AuthLandingPage(BasePage):
         try:
             btn.click()
         except Exception:
-            # fallback JS click
             self.driver.execute_script("arguments[0].click();", btn)
 
-        # Robust XPath: look for a button or option containing the label text
-        xpath = (
-            f"//*/descendant::*[(self::button or self::a or self::div) and "
-            f"(normalize-space(.)='{label}' or .//span[normalize-space(text())='{label}'])]"
+        # Wait for a menu container to appear (try common patterns)
+        menu_candidates = [
+            (By.CSS_SELECTOR, "[role='menu']"),
+            (By.CSS_SELECTOR, ".dropdown-menu, .menu, .dropdown, .menu-items"),
+            (By.XPATH, "//ul[contains(@class,'dropdown') or contains(@class,'menu')]"),
+        ]
+        menu = None
+        for by, sel in menu_candidates:
+            try:
+                menu = WebDriverWait(self.driver, 3).until(EC.visibility_of_element_located((by, sel)))
+                if menu:
+                    break
+            except Exception:
+                continue
+
+        # Build option XPath; prefer searching within discovered menu
+        opt_xpath = (
+            f".//*[self::button or self::a or self::div][normalize-space(.)='{label}' or .//span[normalize-space(text())='{label}']]"
         )
-        opt = WebDriverWait(self.driver, 10).until(
-            EC.visibility_of_element_located((By.XPATH, xpath))
-        )
+        if menu is not None:
+            opt = WebDriverWait(self.driver, 5).until(
+                EC.visibility_of_element_located((By.XPATH, opt_xpath))
+            )
+        else:
+            # Fallback: global search
+            opt = WebDriverWait(self.driver, 5).until(
+                EC.visibility_of_element_located((By.XPATH, opt_xpath.lstrip('.')))
+            )
         try:
             opt.click()
         except Exception:
@@ -194,7 +226,8 @@ class WorkspaceNamePage(BasePage):
         (By.CSS_SELECTOR, "input[name='workspaceName']"),
         (By.CSS_SELECTOR, "input#workspace-name"),
         (By.CSS_SELECTOR, "input[type='text']"),
-        (By.XPATH, "//input[contains(@placeholder, 'ворк') or contains(@placeholder, 'пространств') or contains(@placeholder, 'workspace')]") ,
+        (By.XPATH, "//input[contains(translate(@id,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'workspace')]") ,
+        (By.XPATH, "//input[contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'ворк') or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'пространств') or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'workspace') or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'company') or contains(translate(@placeholder,'ABCDEFGHIJKLMNOPQRSTUVWXYZ','abcdefghijklmnopqrstuvwxyz'),'компан')]") ,
     ]
     NEXT_BTN = (By.CSS_SELECTOR, "button[type='submit']")
     BACK_BTN = (By.CSS_SELECTOR, "[data-testid='back-button']")
@@ -202,8 +235,12 @@ class WorkspaceNamePage(BasePage):
     def _find_name_input(self):
         for by, sel in self.NAME_INPUT_CANDIDATES:
             els = self.driver.find_elements(by, sel)
-            if els:
-                return els[0]
+            for el in els:
+                try:
+                    if el.is_displayed() and el.is_enabled():
+                        return el
+                except Exception:
+                    continue
         return None
 
     def exists_name_input(self) -> bool:
@@ -217,6 +254,34 @@ class WorkspaceNamePage(BasePage):
 
     def next(self):
         self.click(*self.NEXT_BTN)
+
+    def click_back(self):
+        try:
+            self.click(*self.BACK_BTN)
+        except Exception:
+            # Fallback by text
+            try:
+                self.click(By.XPATH, "//button[contains(normalize-space(.), 'Назад')]")
+            except Exception:
+                pass
+
+    def is_next_enabled(self) -> bool:
+        try:
+            el = self.driver.find_element(*self.NEXT_BTN)
+            return el.is_enabled() and 'disabled' not in (el.get_attribute('class') or '')
+        except Exception:
+            return False
+
+    def has_error(self) -> bool:
+        try:
+            # Common patterns: input aria-invalid, error text near input
+            inp = self._find_name_input()
+            if inp is not None and (inp.get_attribute('aria-invalid') == 'true'):
+                return True
+            err = self.driver.find_elements(By.CSS_SELECTOR, ".error, .error-text, .field-error")
+            return any(e.is_displayed() for e in err)
+        except Exception:
+            return False
 
     def back(self):
         self.click(*self.BACK_BTN)

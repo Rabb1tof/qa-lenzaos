@@ -24,14 +24,22 @@ def run(driver) -> None:
     landing.click_start()
     email = EmailPage(driver)
 
-    # Wait until email input is visible
-    WebDriverWait(driver, 7).until(EC.visibility_of_element_located(email.EMAIL_INPUT))
+    # Wait until email input is visible (with one retry on slow UI)
+    try:
+        WebDriverWait(driver, 12).until(EC.visibility_of_element_located(email.EMAIL_INPUT))
+    except TimeoutException:
+        # Retry clicking Start once more and wait again
+        landing.click_start()
+        WebDriverWait(driver, 10).until(EC.visibility_of_element_located(email.EMAIL_INPUT))
 
     data = UserData()
 
     try:
         # Negative cases
         for invalid in data.email_invalids:
+            # Scroll input into view before interaction
+            el = driver.find_element(*email.EMAIL_INPUT)
+            driver.execute_script("arguments[0].scrollIntoView({block:'center'})", el)
             email.enter_email("")
             email.enter_email(invalid)
             # trigger blur/validation
@@ -41,6 +49,8 @@ def run(driver) -> None:
             assert (not email.is_next_enabled()) or email.has_error(), f"Expected validation to block email: {invalid!r}"
 
         # Positive
+        el = driver.find_element(*email.EMAIL_INPUT)
+        driver.execute_script("arguments[0].scrollIntoView({block:'center'})", el)
         email.enter_email("")
         email.enter_email(data.email_valid)
         # trigger blur/enable

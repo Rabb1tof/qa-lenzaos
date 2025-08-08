@@ -25,51 +25,42 @@ def run(driver) -> None:
     try:
         # Ensure on landing
         page = AuthLandingPage(driver).open()
-        # Close cookie/consent if present
         page.dismiss_cookies()
 
-        # Try to ensure dropdown is visible before attempting dropdown path
+        # Try to ensure dropdown is visible quickly
         try:
-            WebDriverWait(driver, 5).until(EC.visibility_of_element_located(AuthLandingPage.LANG_DROPDOWN))
+            WebDriverWait(driver, 3).until(EC.visibility_of_element_located(AuthLandingPage.LANG_DROPDOWN))
         except Exception:
             pass
 
         def lang_label():
             return page.get_language_label()
-
         initial_label = lang_label()
         initial_title = page.get_title_text()
         print(f"[lang] initial label='{initial_label}', title='{initial_title}'")
 
-        # Try dropdown -> English
+        # UI-only checks with assertions
         try:
             page.select_language("English")
-            WebDriverWait(driver, 7).until(
-                lambda d: (lang_label() != initial_label) or (page.get_title_text() != initial_title)
-            )
+            WebDriverWait(driver, 4).until(lambda d: lang_label() and lang_label() != initial_label)
             print(f"[lang] switched to English via dropdown -> '{lang_label()}'")
-        except Exception:
-            # Fallback: URL locale
-            from core.browser import get_base_url
-            base = get_base_url().rstrip('/')
-            driver.get(f"{base}/en")
-            WebDriverWait(driver, 7).until(lambda d: page.get_title_text() != initial_title)
-            print("[lang] switched to English via URL /en")
+        except Exception as e:
+            raise AssertionError(f"Language dropdown failed to switch to English: {e}")
 
-        # Try to switch back -> Russian
         before_label = lang_label()
-        before_title = page.get_title_text()
         try:
             page.select_language("Русский")
-            WebDriverWait(driver, 7).until(
-                lambda d: (lang_label() != before_label) or (page.get_title_text() != before_title)
-            )
+            WebDriverWait(driver, 4).until(lambda d: lang_label() and lang_label() != before_label)
             print(f"[lang] switched back to Russian via dropdown -> '{lang_label()}'")
-        except Exception:
+        except Exception as e:
+            raise AssertionError(f"Language dropdown failed to switch back to Russian: {e}")
+
+        # Restore RU via URL just to normalize state (non-blocking)
+        try:
             from core.browser import get_base_url
             base = get_base_url().rstrip('/')
             driver.get(f"{base}/ru")
-            WebDriverWait(driver, 7).until(lambda d: page.get_title_text() != before_title)
-            print("[lang] switched back to Russian via URL /ru")
+        except Exception:
+            pass
     except TimeoutException as e:
-        raise AssertionError(f"Language step failed due to timeout: {e}")
+        raise AssertionError(f"Language step timeout: {e}")

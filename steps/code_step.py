@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from selenium.common.exceptions import TimeoutException
 
-from pages.auth_pages import CodePage, EmailPage
+from pages.auth_pages import CodePage, EmailPage, WorkspaceNamePage
 from selenium.webdriver.support.ui import WebDriverWait
 from config.test_data import UserData
 
@@ -42,5 +42,21 @@ def run(driver) -> None:
 
         # Позитивный кейс — ввод корректного кода
         page.enter_code(data.code_valid)
+        # Дождаться перехода на страницу воркспейса
+        wsp = WorkspaceNamePage(driver)
+        def on_workspace(d):
+            try:
+                return wsp.exists_name_input() or ('workspace' in d.current_url)
+            except Exception:
+                return False
+        try:
+            WebDriverWait(driver, 7).until(on_workspace)
+        except Exception:
+            # Попробуем нажать "Продолжить" на странице кода (если есть кнопка), затем подождём ещё
+            try:
+                page.continue_next()
+            except Exception:
+                pass
+            WebDriverWait(driver, 10).until(on_workspace)
     except TimeoutException as e:
         raise AssertionError(f"Code step timeout: {e}")
